@@ -21,22 +21,23 @@ Outputs (into OUT_DIR):
 Arena geometry comes from a SEPARATE csv (never edit the DLC csv -- it is
 overwritten every time you re-analyze). One row per video:
 
-    video_id,hx1,hy1,hx2,hy2,vx1,vy1,vx2,vy2
-    20260421_m367,102.0,455.0,610.0,455.0,356.0,201.0,356.0,709.0
+    video_id,genotype,sex,hx1,hy1,hx2,hy2,vx1,vy1,vx2,vy2
+    20260908_m450,WT,M,158,238,387,238,274,120,274,346
 
   h* = the two endpoints of the HORIZONTAL line drawn across the bucket in ImageJ
   v* = the two endpoints of the VERTICAL line
   video_id = the animal folder name (or the mouse id, e.g. "m367" / "367")
+  genotype, sex = per-animal labels used in the summary table and figures
 
 Generate a pre-filled template to edit:
     python openfield_analysis.py --make-template
 
-Usage (both cohorts live under DATA_ROOT = .../202604_moseq-pilot):
-    # day 1 (20260421) -> 20260421_openfield_out (defaults):
+Usage (pass the day folder; animal folders are <day>_m*, output goes to
+<day>/<day>_openfield_out):
+    # 20260908 (default):
     /opt/miniconda3/envs/DEEPLABCUT/bin/python openfield_analysis.py
-    # day 2 (20260422) -> 20260422_openfield_out:
-    ... openfield_analysis.py --pattern '20260422_m*' \
-            -o /Volumes/dorothea_1T/202604_moseq-pilot/20260422_openfield_out
+    # any other day, e.g. 20260909:
+    /opt/miniconda3/envs/DEEPLABCUT/bin/python openfield_analysis.py /Volumes/DT2_2t/20260909
 """
 
 from __future__ import annotations
@@ -62,15 +63,15 @@ from matplotlib.backends.backend_pdf import PdfPages
 # Both cohorts' animal folders (20260421_m* and 20260422_m*) live under this
 # parent. The default run does the 20260421 (day-1) cohort; pass --pattern and
 # -o for the 20260422 (day-2) cohort (see the commands in the header).
-DATA_ROOT = "/Volumes/dorothea_1T/202604_moseq-pilot"
-OUT_DIR = os.path.join(DATA_ROOT, "20260421_openfield_out")
-ARENA_CSV = "/Volumes/dorothea_1T/arena_coords.csv"     # shared by both cohorts
+DATA_ROOT = "/Volumes/DT2_2t/20260908"
+OUT_DIR = os.path.join(DATA_ROOT, "20260908_openfield_out")
+ARENA_CSV = "/Volumes/DT2_2t/arena_coords.csv"     # shared by all cohorts
 
 # Which animal folders to analyze, and which DLC output within them. The csv
 # pattern pins the Jul16 training set and the snapshot_best exports, so older
 # runs are never picked up even with --recursive.
-FOLDER_PATTERN = "20260421_m*"
-CSV_PATTERN = "depthDLC_Resnet50_20260421-m3*Jul16shuffle*_snapshot_best-*.csv"
+FOLDER_PATTERN = "20260908_m*"
+CSV_PATTERN = "depthDLC_Resnet50_*shuffle*_snapshot_best-*.csv"
 
 CM_PER_IN = 2.54
 BUCKET_DIAMETER_IN = 17.0                       # real bucket diameter, inches
@@ -137,11 +138,10 @@ WALL_BIN_MIN = 5.0
 BODYLEN_PART_A = "nose"
 BODYLEN_PART_B = "tail"
 
-GENOTYPE = {
-    "367": "Df(h16p12)/+", "375": "Df(h16p12)/+", "390": "Df(h16p12)/+",
-    "368": "WT", "376": "WT", "389": "WT",
-}
-GROUP_COLORS = {"WT": "#4477AA", "Df(h16p12)/+": "#EE6677", "?": "#999999"}
+# Genotype and sex are read per animal from the "genotype" and "sex" columns of
+# arena_coords.csv. Genotypes not listed here are drawn in grey.
+GROUP_COLORS = {"WT": "#4477AA", "16p12.1/+": "#EE6677", "1q21.1/+": "#228833",
+                "16p12.1/+;1q21.1/+": "#AA3377", "?": "#999999"}
 
 
 # --------------------------------------------------------------------------- #
@@ -192,10 +192,18 @@ def mouse_id(folder_name: str) -> str:
 # --------------------------------------------------------------------------- #
 # Arena geometry: center, radius, and the pixel -> cm scale
 # --------------------------------------------------------------------------- #
+def _text(value) -> str:
+    """Clean a free-text cell from arena_coords.csv; blank/NaN becomes "?"."""
+    return "?" if pd.isna(value) or not str(value).strip() else str(value).strip()
+
+
 class Arena:
     """Bucket geometry for one video, derived from two ImageJ diameter lines."""
 
     def __init__(self, row: pd.Series):
+        self.genotype = _text(row.get("genotype"))
+        self.sex = _text(row.get("sex"))
+
         h1 = np.array([row["hx1"], row["hy1"]], float)
         h2 = np.array([row["hx2"], row["hy2"]], float)
         v1 = np.array([row["vx1"], row["vy1"]], float)
@@ -261,7 +269,9 @@ def load_arena_table(path: str) -> pd.DataFrame:
             f"Arena coordinate file not found: {path}\n"
             f"Create it with:  python {os.path.basename(__file__)} --make-template"
         )
-    df = pd.read_csv(path)
+    # utf-8-sig drops the byte-order mark Excel adds, which would otherwise
+    # corrupt the first column name ("\ufeffvideo_id").
+    df = pd.read_csv(path, encoding="utf-8-sig")
     need = ["video_id", "hx1", "hy1", "hx2", "hy2", "vx1", "vy1", "vx2", "vy2"]
     missing = [c for c in need if c not in df.columns]
     if missing:
@@ -389,7 +399,8 @@ def analyze(folder: str, csv_path: str, arena: Arena) -> tuple[dict, pd.DataFram
     metrics: dict = {
         "mouse": mid,
         "folder": folder,
-        "genotype": GENOTYPE.get(mid, "?"),
+        "genotype": arena.genotype,
+        "sex": arena.sex,
         "dlc_csv": os.path.basename(csv_path),
         "shuffle": shuffle_m.group(1) if shuffle_m else "",
         "n_frames": n_frames,
@@ -598,7 +609,7 @@ def per_animal_page(pdf, m: dict, trk: pd.DataFrame, arena: Arena):
     ax_eth2 = fig.add_subplot(right[1, 0])
 
     color = GROUP_COLORS.get(m["genotype"], "#999999")
-    title = (f"m{m['mouse']} ({m['genotype']}) - shuffle {m['shuffle']} - "
+    title = (f"m{m['mouse']} ({m['genotype']}, {m['sex']}) - shuffle {m['shuffle']} - "
              f"{m['duration_s']/60:.1f} min - {m['total_distance_cm']:.0f} cm travelled")
     if not m["qc_pass"]:
         title += f"\nFAILED QC: {m['qc_note']}"
@@ -665,7 +676,9 @@ def _metric_bar(ax, summary: pd.DataFrame, col: str, label: str):
                edgecolor="k", width=0.6)
         ax.scatter(np.full(len(vals), i), vals, color="k", zorder=3, s=18)
     ax.set_xticks(range(len(groups)))
-    ax.set_xticklabels(groups)
+    # Tilted so long genotype names (e.g. "16p12.1/+;1q21.1/+") don't overlap.
+    ax.set_xticklabels(groups, rotation=35, ha="right", rotation_mode="anchor",
+                       fontsize=8)
     ax.set_title(label, fontsize=10)
 
 
@@ -732,7 +745,9 @@ def _bodylen_median_panel(ax, summary: pd.DataFrame):
         med = np.median(vals)
         ax.plot([i - 0.25, i + 0.25], [med, med], color="k", lw=2, zorder=2)
     ax.set_xticks(range(len(groups)))
-    ax.set_xticklabels(groups)
+    # Tilted so long genotype names (e.g. "16p12.1/+;1q21.1/+") don't overlap.
+    ax.set_xticklabels(groups, rotation=35, ha="right", rotation_mode="anchor",
+                       fontsize=8)
     ax.set_ylabel("median body length (cm)")
     ax.set_title("body length: per-animal medians", fontsize=9)
 
@@ -778,7 +793,7 @@ def group_page(pdf, summary: pd.DataFrame, tracks: dict, rows: list):
     fig = plt.figure(figsize=(22, 10))
     # Two independent rows so each can set its own generous column spacing; this
     # keeps the axis/scale labels from colliding with the neighbouring panel.
-    outer = fig.add_gridspec(2, 1, hspace=0.55)
+    outer = fig.add_gridspec(2, 1, hspace=0.8)
     top = outer[0].subgridspec(1, 4, wspace=0.55)
     bot = outer[1].subgridspec(1, 3, wspace=0.45)
     # Top row: the four group-metric bars.
@@ -799,7 +814,7 @@ def group_page(pdf, summary: pd.DataFrame, tracks: dict, rows: list):
 def make_template(root: str, pattern: str, csv_pattern: str, path: str):
     if os.path.exists(path):
         sys.exit(f"{path} already exists -- refusing to overwrite it.")
-    rows = [{"video_id": name, "hx1": "", "hy1": "", "hx2": "", "hy2": "",
+    rows = [{"video_id": name, "genotype": "", "sex": "", "hx1": "", "hy1": "", "hx2": "", "hy2": "",
              "vx1": "", "vy1": "", "vx2": "", "vy2": "", "notes": ""}
             for name in sorted(find_animals(root, pattern, csv_pattern))]
     if not rows:
@@ -820,8 +835,8 @@ def main():
                    help="folder containing the animal subfolders")
     p.add_argument("-o", "--out", default=None, help="output folder")
     p.add_argument("-a", "--arena", default=None, help="path to arena_coords.csv")
-    p.add_argument("--pattern", default=FOLDER_PATTERN,
-                   help=f"glob for animal folders (default: {FOLDER_PATTERN})")
+    p.add_argument("--pattern", default=None,
+                   help="glob for animal folders (default: <day folder name>_m*)")
     p.add_argument("--csv-pattern", default=CSV_PATTERN,
                    help=f"glob for the DLC csv (default: {CSV_PATTERN})")
     p.add_argument("--recursive", action="store_true",
@@ -832,7 +847,11 @@ def main():
 
     root = os.path.abspath(args.root)
     arena_csv = args.arena or ARENA_CSV        # one shared arena file for both cohorts
-    out_dir = args.out or os.path.join(root, os.path.basename(OUT_DIR))
+    day = os.path.basename(root)
+    # Animal folders and the output folder are named after the day folder, so
+    # pointing the script at another day needs no other flags.
+    args.pattern = args.pattern or f"{day}_m*"
+    out_dir = args.out or os.path.join(root, f"{day}_openfield_out")
 
     if args.make_template:
         make_template(root, args.pattern, args.csv_pattern, arena_csv)
@@ -853,7 +872,10 @@ def main():
     for folder in animals:
         mid = mouse_id(folder)
         folder_keys |= {folder, f"m{mid}", mid}
-    unused = [k for k in arena_table.index if k not in folder_keys]
+    # Rows for other days (other date prefixes) are expected, so only rows that
+    # belong to this day are checked.
+    unused = [k for k in arena_table.index if k not in folder_keys
+              and (k.startswith(f"{day}_") or not re.match(r"\d{8}_", k))]
     if unused:
         print(f"  [warn] {os.path.basename(arena_csv)} rows matching no folder: "
               f"{', '.join(unused)}", file=sys.stderr)

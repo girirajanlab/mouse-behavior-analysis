@@ -52,7 +52,12 @@ DAY1_CSV = os.path.join(DATA_ROOT, "20260421_openfield_out", "summary_metrics_op
 DAY2_CSV = os.path.join(DATA_ROOT, "20260422_openfield_out", "summary_metrics_openfield.csv")
 OUT_PDF = os.path.join(DATA_ROOT, "day1_day2_openfield_comparison.pdf")
 
-GROUP_COLORS = {"WT": "#4477AA", "Df(h16p12)/+": "#EE6677", "?": "#999999"}
+GROUP_COLORS = {"WT": "#4477AA", "Df(h16p12)/+": "#EE6677",
+                "16p12.1/+": "#EE6677", "1q21.1/+": "#228833",
+                "16p12.1/+;1q21.1/+": "#AA3377", "?": "#999999"}
+GENOTYPE_ORDER = ("WT", "Df(h16p12)/+", "16p12.1/+", "1q21.1/+", "16p12.1/+;1q21.1/+")
+# date labels for the whole-session title; main() fills these from the csv paths
+DAY_LABELS = ["20260421", "20260422"]
 
 # For the time-binned page: recording rate (must match openfield_analysis.py) and
 # the interval width. Per-frame data comes from the per_animal/*_track.csv files.
@@ -131,8 +136,17 @@ def _paired_p(v1: np.ndarray, v2: np.ndarray) -> float | None:
 
 
 def _genotype_order(genos: np.ndarray) -> list:
-    ordered = [g for g in ("WT", "Df(h16p12)/+") if g in set(genos)]
-    return ordered or sorted(set(genos))
+    present = set(genos)
+    ordered = [g for g in GENOTYPE_ORDER if g in present]
+    return ordered + sorted(present - set(ordered))
+
+
+def _dodge_width(n_geno: int) -> tuple[float, float]:
+    """Bar spacing / width so n genotype bars fit side by side within one x slot."""
+    if n_geno <= 2:
+        return 0.36, 0.30
+    dodge = 0.8 / n_geno
+    return dodge, 0.83 * dodge
 
 
 def _draw_panel(ax, v1, v2, genos, ylabel_text=None, title_text=None, show_p=True):
@@ -146,9 +160,8 @@ def _draw_panel(ax, v1, v2, genos, ylabel_text=None, title_text=None, show_p=Tru
     genos = np.asarray(genos)
     day_vals = {0: v1, 1: v2}
     geno_order = _genotype_order(genos)
-    # dodge > bar_w so the two genotype bars are fully separated (no overlap)
-    dodge = 0.36          # WT vs Df(h16p12)/+ separation within a day
-    bar_w = 0.30
+    # dodge > bar_w so the genotype bars are fully separated (no overlap)
+    dodge, bar_w = _dodge_width(len(geno_order))
 
     def geno_x(gi: int) -> float:
         return (gi - (len(geno_order) - 1) / 2.0) * dodge
@@ -183,6 +196,8 @@ def _draw_panel(ax, v1, v2, genos, ylabel_text=None, title_text=None, show_p=Tru
         ax.set_title(title_text, fontsize=10)
 
     if show_p:                       # paired t-test (day 1 vs day 2) within genotype
+        lo, hi = ax.get_ylim()           # headroom so the p-value text clears the bars
+        ax.set_ylim(lo, hi + (hi - lo) * 0.18)
         ytxt = 0.98
         for g in geno_order:
             mask = genos == g
@@ -295,7 +310,7 @@ def whole_session_page(pdf, paired: pd.DataFrame):
     fig, axes = plt.subplots(2, 2, figsize=(10, 9))
     for ax, (col, label) in zip(axes.flat, METRICS):
         metric_panel(ax, paired, col, label)
-    fig.suptitle(f"Open-field, whole session: day 1 (20260421) vs day 2 (20260422)   "
+    fig.suptitle(f"Open-field, whole session: day 1 ({DAY_LABELS[0]}) vs day 2 ({DAY_LABELS[1]})   "
                  f"n = {len(paired)} paired mice")
     fig.tight_layout()
     _genotype_legend(fig, paired["genotype"].to_numpy())
@@ -311,7 +326,7 @@ def _grouped_bars(ax, groups_vals, genos, xtick_labels, ylabel=None, title=None)
     """
     genos = np.asarray(genos)
     geno_order = _genotype_order(genos)
-    dodge, bar_w = 0.36, 0.30
+    dodge, bar_w = _dodge_width(len(geno_order))
 
     def geno_x(gi):
         return (gi - (len(geno_order) - 1) / 2.0) * dodge
@@ -448,6 +463,12 @@ def main():
     p.add_argument("--day2", default=DAY2_CSV, help="day-2 summary csv")
     p.add_argument("-o", "--out", default=OUT_PDF, help="whole-session output pdf")
     args = p.parse_args()
+
+    import re
+    for i, path in enumerate((args.day1, args.day2)):
+        m = re.search(r"(\d{8})_openfield_out", os.path.abspath(path))
+        if m:
+            DAY_LABELS[i] = m.group(1)
 
     d1 = load_summary(args.day1, "day 1")
     d2 = load_summary(args.day2, "day 2")
